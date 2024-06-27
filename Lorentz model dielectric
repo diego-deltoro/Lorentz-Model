@@ -1,0 +1,141 @@
+import numpy as np 
+import matplotlib.pyplot as plt
+from scipy.optimize import curve_fit
+from ipywidgets import interact, FloatSlider, VBox, widgets
+import pandas as pd
+
+#Insert the csv files, make sure to choose the path correctly, also the name of the columns
+#In this case the graphs of the real and imaginary part of the dielectric function are used
+file_path1 = '117.2 Schoenes.csv'
+file_path2 = '117.2.Re Schoenes.csv'  
+data1 = pd.read_csv(file_path1)
+data2 = pd.read_csv(file_path2)
+
+# Define constants
+hbar = 6.582e-16  # Reduced Planck's constant in eV·s
+c = 3e8  # Speed of light in m/s
+h = 4.135667696e-15  # Planck's constant in eV·s
+
+# Define the range of energies in eV
+E = np.linspace(0.1, 18.2, 500)
+
+# Convert energies to angular frequencies
+omega = E / hbar
+
+# Function to calculate the dielectric function
+def dielectric_function(omega, epsilon_inf, *params): #array of omega,epsilon_inf value, array of the variables (w_0,w_p,gamma)
+    num_oscillators = len(params) // 3 #Calculates the number of oscillators
+    epsilon = np.full_like(omega, epsilon_inf, dtype=np.complex128) #Dielectric complex function
+
+    for i in range(num_oscillators): #Loop over the oscillators
+        #extract the values for each loop
+        omega_0_ev = params[3*i] 
+        omega_p_ev = params[3*i+1]
+        gamma_ev = params[3*i+2]
+        #Convert to angular freq
+        omega_p = omega_p_ev / hbar
+        omega_0 = omega_0_ev / hbar
+        gamma = gamma_ev / hbar
+        #Lorentz model
+        numerator = -omega_p**2
+        denominator = (omega**2 - omega_0**2) + 1j * gamma * omega
+        epsilon += numerator / denominator
+    #Obtain the real and imaginary part of the dielectric function
+    epsilon_real = np.real(epsilon)
+    epsilon_imag = np.imag(epsilon)
+    return epsilon_real, epsilon_imag
+
+# Function to fit the data
+def fit_dielectric_function(E, epsilon_exp, num_oscillators, omega_0_list):
+    def fit_func(E, epsilon_inf, *params): #Use non-linear least squares to fit a function, f, to data.
+        omega = E / hbar
+        return dielectric_function(omega, epsilon_inf, *params)[1] #Calls the dielectric function and returns the imaginary part "[1]"
+
+    #Uses a initial guess of eps_inf=1, for each oscillator use a guess for each variable and creates a sequence of tuples
+    initial_guess = [1.0] + [val for pair in zip(omega_0_list, [1.0] * num_oscillators, [0.1] * num_oscillators) for val in pair]
+    bounds = (0, [np.inf] + [np.inf, np.inf, np.inf] * num_oscillators) #Limits set from 0 to inf for the parameters
+    popt, pcov = curve_fit(fit_func, E, epsilon_exp, p0=initial_guess, bounds=bounds)#Part of the fit function and returns the optimized values
+    return popt
+
+# Ask user for the number of oscillators and their omega_0 values
+num_oscillators = int(input("Enter the number of oscillators: "))
+omega_0_list = [float(input(f"Enter omega_0 value for oscillator {i+1} (eV): ")) for i in range(num_oscillators)]
+
+# Extract experimental data for fitting, column 1 is the energy values in eV and column2 is the value of the epsilon
+E_exp1 = data1['Column1']
+epsilon_exp1 = data1['Column2']
+E_exp2 = data2['Column1']
+epsilon_exp2 = data2['Column2']
+
+# Perform the fitting
+popt = fit_dielectric_function(E_exp1, epsilon_exp1, num_oscillators, omega_0_list)
+
+# Print the fitting results
+epsilon_inf = popt[0]
+params = popt[1:]
+
+print(f"Fitted epsilon_inf: {epsilon_inf}")
+for i in range(num_oscillators):
+    print(f"Oscillator {i+1}:")
+    print(f"  omega_0: {params[3*i]} eV")
+    print(f"  omega_p: {params[3*i+1]} eV")
+    print(f"  gamma: {params[3*i+2]} eV")
+
+# Function to plot the results
+def plot_fitted_dielectric_function(epsilon_inf, *params):
+    epsilon_real, epsilon_imag = dielectric_function(omega, epsilon_inf, *params)
+
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+
+    # Plot the real and imaginary parts of the dielectric function
+    ax2 = ax1.twiny() #Two x-axis, in eV and nm
+    ax1.plot(E, epsilon_real, label='Fitted Real Part', color='g') #plot the real part of the function
+    ax1.plot(E, epsilon_imag, label='Fitted Imaginary Part', color='b')# plot the imaginary part of the function
+    ax1.scatter(E_exp1, epsilon_exp1, color='r', s=10, label='Experimental Data 1') #Plot the first csv file
+    ax1.scatter(E_exp2, epsilon_exp2, color='c', s=10, label='Experimental Data 2') #Plot the second csv file
+    ax1.set_xlabel('Energy (eV)')
+    ax1.set_ylabel('Dielectric Function ε(E)')
+    ax1.set_title('Dielectric Function (Real and Imaginary Parts)')
+    ax1.legend()
+    ax1.grid(True)
+    
+    def e_to_lambda(E):
+        return 1240 / E
+    
+    def filter_energies_for_wavelength(energies): #To avoid inf values when converted to wavelenght
+        return [e for e in energies if e >= 1.0]
+
+    filtered_energies = filter_energies_for_wavelength(ax1.get_xticks())
+    ax2.set_xlim(ax1.get_xlim())
+    ax2.set_xticks(filtered_energies)
+    ax2.set_xticklabels([f'{e_to_lambda(E):.1f}' for E in filtered_energies])
+    ax2.set_xlabel('Wavelength (nm)')
+
+    plt.tight_layout()
+    plt.show()
+
+# Function to create sliders for each parameter
+def create_sliders(num_oscillators, epsilon_inf, params):
+    sliders = {
+        'epsilon_inf': FloatSlider(value=epsilon_inf, min=0, max=5.0, step=0.1, description=r'$\epsilon_{\infty}$')
+    }
+    #It uses certain values and steps for each varibale, in case needed the min, max or step can be changed.
+    for i in range(num_oscillators):
+        sliders[f'omega_0_{i}'] = FloatSlider(value=params[3*i], min=0.1, max=18.0, step=0.01, description=rf'$\omega_{{0{i+1}}}$ (eV)')
+        sliders[f'omega_p_{i}'] = FloatSlider(value=params[3*i+1], min=0.1, max=75.0, step=0.1, description=rf'$\omega_{{p{i+1}}}$ (eV)')
+        sliders[f'gamma_{i}'] = FloatSlider(value=params[3*i+2], min=0.01, max=12.0, step=0.01, description=rf'$\gamma_{i+1}$ (eV)')
+    
+    return sliders
+
+# Create sliders with the fitted parameters
+sliders = create_sliders(num_oscillators, epsilon_inf, params)
+
+# Create an interactive plot with sliders, allows the user to change its values but starts with the best fitted ones
+@interact(**sliders)
+def update_plot(epsilon_inf, **params):
+    param_list = []
+    for i in range(num_oscillators):
+        param_list.append(params[f'omega_0_{i}'])
+        param_list.append(params[f'omega_p_{i}'])
+        param_list.append(params[f'gamma_{i}'])
+    plot_fitted_dielectric_function(epsilon_inf, *param_list)
